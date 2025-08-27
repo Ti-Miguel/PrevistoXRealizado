@@ -1,17 +1,8 @@
-/* ========= PxR com Setores (ODONTOLOGIA / MEDICINA) =========
-   Armazenamento (v2):
-   STORAGE_KEY_V2 = {
-     [setor]: { [YYYY-MM]: { entries: [...] } }
-   }
-   Catálogo continua GLOBAL (categorias/subcategorias compartilhadas).
-============================================================== */
+/* ========= PxR com Setores + MySQL API + Exportação ========= */
+const API = "/previsto-realizado/api/pxr"; // ajuste se sua API estiver em outro caminho
 
 const SECTORS = { ODONTOLOGIA: "ODONTOLOGIA", MEDICINA: "MEDICINA" };
 const DEFAULT_SECTOR = SECTORS.ODONTOLOGIA;
-
-const STORAGE_KEY_V2 = "pxr_data_v2";     // novo (com setor)
-const LEGACY_KEY_V1 = "pxr_data_v1";      // antigo (sem setor)
-const CATALOG_KEY   = "pxr_catalog_v1";   // global (mantido)
 
 /* ===== atalhos / utils ===== */
 const $ = (sel) => document.querySelector(sel);
@@ -25,7 +16,6 @@ const el = {
   formPrev: $("#formPrev"), categoria: $("#categoria"),
   subcategoria: $("#subcategoria"), vencimento: $("#vencimento"),
   valorPrev: $("#valorPrev"), tbPrevMesBody: $("#tbPrevMes tbody"),
-
   filtroStatus: $("#filtroStatus"), tbLancBody: $("#tbLanc tbody"),
 
   btnAtualizarRel: $("#btnAtualizarRel"), tbRelBody: $("#tbRel tbody"),
@@ -49,246 +39,155 @@ let editingId = null;
 const money = (v) => (isNaN(v) ? 0 : v).toLocaleString("pt-BR",{style:"currency",currency:"BRL"});
 
 /* ===== Setor ativo + tema ===== */
-function getActiveSector(){
-  return document.documentElement.getAttribute("data-sector") || DEFAULT_SECTOR;
-}
+function getActiveSector(){ return document.documentElement.getAttribute("data-sector") || DEFAULT_SECTOR; }
 function setActiveSector(sector){
   document.documentElement.setAttribute("data-sector", sector);
   el.sectorBtns.forEach(b => b.setAttribute("aria-pressed", String(b.dataset.sector === sector)));
-  render(); // recarrega tudo do setor
+  cacheEntries = {}; // limpa cache
+  renderAsync();
 }
 
-/* ===== Datas SEM fuso ===== */
+/* ===== Datas ===== */
 function todayYMD(){ const d=new Date(); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`; }
 function monthKeyLocal(){ const d=new Date(); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}`; }
-function ymdToBR(ymd){ if(!ymd) return "—"; const [y,m,d]=String(ymd).split("-"); return `${d.padStart(2,"0")}/${m.padStart(2,"0")}/${y}`; }
-function normalizeYMD(s){
-  if (!s) return null;
-  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
-  const d = new Date(s); if (isNaN(d)) return null;
-  return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;
+function ymdToBR(ymd){ if(!ymd) return "—"; const [y,m,d]=String(ymd).split("-"); return `${d?.padStart(2,"0")}/${m?.padStart(2,"0")}/${y}`; }
+
+/* ===== Nome de arquivo amigável ===== */
+function makeFileName(prefix){
+  const setor = getActiveSector();
+  const mes = el.mesRef?.value || monthKeyLocal();
+  return `${prefix}_${setor}_${mes}`;
 }
 
-/* ===== storage helpers ===== */
-const load = (k, d) => { try { return JSON.parse(localStorage.getItem(k)) ?? d; } catch { return d; } };
-const save = (k, v) => localStorage.setItem(k, JSON.stringify(v));
-
-/* Migração de v1 (sem setor) -> v2 (com setor).
-   Estratégia: move TODOS os meses existentes para o setor ODONTOLOGIA, para não perder dados.
-*/
-function migrateV1toV2(){
-  const v2 = load(STORAGE_KEY_V2, null);
-  if (v2) return; // já migrou
-
-  const v1 = load(LEGACY_KEY_V1, null);
-  if (!v1) { save(STORAGE_KEY_V2, {}); return; }
-
-  const dest = {};
-  dest[SECTORS.ODONTOLOGIA] = {};
-  for (const [mKey, md] of Object.entries(v1)) {
-    if (!md || !Array.isArray(md.entries)) continue;
-    // normaliza datas antigas
-    md.entries.forEach(e => {
-      e.vencimento = normalizeYMD(e.vencimento);
-      e.criadoEm = normalizeYMD(e.criadoEm);
-      if (Array.isArray(e.pagamentos)) {
-        e.pagamentos.forEach(p => p.data = normalizeYMD(p.data));
-      }
-    });
-    dest[SECTORS.ODONTOLOGIA][mKey] = md;
-  }
-  save(STORAGE_KEY_V2, dest);
+/* ===== API helpers ===== */
+async function apiGet(url){
+  const r = await fetch(url);
+  const j = await r.json().catch(()=>({ok:false, erro:"Resposta inválida"}));
+  if(!j.ok) throw new Error(j.erro || "Erro de API");
+  return j.data;
+}
+async function apiPost(url, payload){
+  const r = await fetch(url, { method:"POST", body: JSON.stringify(payload) });
+  const j = await r.json().catch(()=>({ok:false, erro:"Resposta inválida"}));
+  if(!j.ok) throw new Error(j.erro || "Erro de API");
+  return j.data;
 }
 
-/* Estrutura v2 */
-function getAllDataV2(){
-  const all = load(STORAGE_KEY_V2, null);
-  if (!all) { save(STORAGE_KEY_V2, {}); return {}; }
-  return all;
+/* ===== Cache de entradas ===== */
+let cacheEntries = {}; // "SETOR|MES" -> { entries: [...] }
+function getMonthKey(){ return el.mesRef.value || monthKeyLocal(); }
+async function fetchEntries(sector, mes){
+  const key = `${sector}|${mes}`;
+  if(cacheEntries[key]) return cacheEntries[key];
+  const data = await apiGet(`${API}/entries_list.php?setor=${encodeURIComponent(sector)}&mes=${encodeURIComponent(mes)}`);
+  cacheEntries[key] = { entries: data.entries || [] };
+  return cacheEntries[key];
 }
-function setAllDataV2(obj){ save(STORAGE_KEY_V2, obj); }
+async function getMonthDataAsync(){ return await fetchEntries(getActiveSector(), getMonthKey()); }
 
-const getMonthKey = () => el.mesRef.value || monthKeyLocal();
-function ensureMonth(){
-  const sector = getActiveSector(), mKey = getMonthKey();
-  const all = getAllDataV2();
-  if (!all[sector]) all[sector] = {};
-  if (!all[sector][mKey]) all[sector][mKey] = { entries: [] };
-  setAllDataV2(all);
-  return all[sector][mKey];
-}
-function getMonthData(){
-  const sector = getActiveSector(), mKey = getMonthKey();
-  const all = getAllDataV2();
-  return (all[sector] && all[sector][mKey]) ? all[sector][mKey] : ensureMonth();
-}
-function setMonthData(md){
-  const sector = getActiveSector(), mKey = getMonthKey();
-  const all = getAllDataV2();
-  if (!all[sector]) all[sector] = {};
-  all[sector][mKey] = md;
-  setAllDataV2(all);
-}
-
-/* ===== Catálogo global ===== */
-function getCatalog(){
-  const cat = load(CATALOG_KEY, null);
-  if (cat) return cat;
-  const fresh = { categories: [], subcategories: [] };
-  save(CATALOG_KEY, fresh); return fresh;
-}
-const setCatalog = (c) => save(CATALOG_KEY, c);
-const catName = (id) => getCatalog().categories.find(x=>x.id===id)?.name || "(categoria)";
-const subName = (id) => getCatalog().subcategories.find(x=>x.id===id)?.name || "(subcategoria)";
-function fillCatSelect(sel, withBlank=true){
-  const opts = getCatalog().categories.map(c=>`<option value="${c.id}">${esc(c.name)}</option>`).join("");
-  sel.innerHTML = (withBlank?`<option value="">Selecione...</option>`:"") + opts;
-}
-function fillSubSelect(sel, catId, withBlank=true){
-  const opts = getCatalog().subcategories.filter(s=>s.categoryId===catId)
-     .map(s=>`<option value="${s.id}">${esc(s.name)}</option>`).join("");
-  sel.innerHTML = (withBlank?`<option value="">Selecione...</option>`:"") + opts;
-}
-const uuid = () => (crypto.randomUUID ? crypto.randomUUID() : String(Date.now()+Math.random()));
-const esc = (s="") => s.replace(/[&<>"']/g, m => ({ "&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#039;" }[m]));
-
-/* ===== regras de negócio ===== */
-const totalPago = (e) => (e.pagamentos||[]).reduce((a,p)=>a+(parseFloat(p.valor)||0),0);
+/* ===== Catálogo (servidor) ===== */
+async function getCatalog(){ return await apiGet(`${API}/catalog_list.php`); }
 
 /* ===== PREVISÕES ===== */
-function onAddPrevisao(ev){
+async function onAddPrevisao(ev){
   ev.preventDefault();
-  const categoriaId = el.categoria.value;
-  const subcategoriaId = el.subcategoria.value;
+  const categoriaId = +el.categoria.value;
+  const subcategoriaId = +el.subcategoria.value;
   const vencimento = el.vencimento.value || null;
   const valorPrev = parseFloat(String(el.valorPrev.value).replace(",", ".")) || 0;
   if(!categoriaId || !subcategoriaId || !valorPrev){ alert("Preencha categoria, subcategoria e valor."); return; }
-
-  const md = getMonthData();
-  md.entries.push({ id:uuid(), categoriaId, subcategoriaId, vencimento, valorPrev, pagamentos:[], criadoEm: todayYMD() });
-  setMonthData(md);
-
+  await apiPost(`${API}/entry_add.php`, {
+    setor: getActiveSector(), mes: getMonthKey(),
+    categoriaId, subcategoriaId, vencimento, valorPrev
+  });
+  cacheEntries = {};
   el.formPrev.reset();
-  fillCatSelect(el.categoria); el.subcategoria.innerHTML = `<option value="">Selecione...</option>`;
-  render();
-}
-function renderPrevMes(){
-  const rows = getMonthData().entries.slice()
-    .sort((a,b)=>{
-      const av=a.vencimento||"9999-12-31", bv=b.vencimento||"9999-12-31";
-      if(av!==bv) return av.localeCompare(bv);
-      const ac = catName(a.categoriaId).localeCompare(catName(b.categoriaId));
-      if(ac!==0) return ac;
-      return subName(a.subcategoriaId).localeCompare(subName(b.subcategoriaId));
-    })
-    .map(e=>{
-      const venc = ymdToBR(e.vencimento);
-      return `<tr>
-        <td>${venc}</td><td>${esc(catName(e.categoriaId))}</td><td>${esc(subName(e.subcategoriaId))}</td>
-        <td class="right">${money(e.valorPrev)}</td>
-      </tr>`;
-    }).join("");
-  el.tbPrevMesBody.innerHTML = rows || `<tr><td colspan="4" style="text-align:center;color:#94a3b8;padding:16px">Nenhuma previsão lançada.</td></tr>`;
+  await renderAsync();
 }
 
-/* ===== LANÇAMENTOS DIÁRIOS ===== */
-function addPagamento(id, valorStr, dataStr){
-  const valor = parseFloat(String(valorStr).replace(",", ".")) || 0;
-  if(valor<=0){ alert("Informe um valor maior que zero."); return; }
-  const md = getMonthData();
-  const it = md.entries.find(e=>e.id===id); if(!it) return;
-  it.pagamentos.push({ valor, data: dataStr || todayYMD() });
-  setMonthData(md); render();
-}
-function openEditModal(id){
-  const it = getMonthData().entries.find(e=>e.id===id); if(!it) return;
+async function openEditModal(id){
+  const md = await getMonthDataAsync();
+  const it = md.entries.find(e=>e.id==id); if(!it) return;
   editingId = id;
-  fillCatSelect(el.editCat, false); el.editCat.value = it.categoriaId;
-  fillSubSelect(el.editSub, it.categoriaId, false); el.editSub.value = it.subcategoriaId;
-  el.editVenc.value = it.vencimento || ""; el.editPrev.value = String(it.valorPrev);
+  const cat = await getCatalog();
+  const catOptions = cat.categories.map(c=>`<option value="${c.id}">${c.name}</option>`).join("");
+  el.editCat.innerHTML = catOptions; el.editCat.value = it.categoriaId;
+  const subs = cat.subcategories.filter(s=>s.categoryId==it.categoriaId);
+  el.editSub.innerHTML = subs.map(s=>`<option value="${s.id}">${s.name}</option>`).join("");
+  el.editSub.value = it.subcategoriaId;
+  el.editVenc.value = it.vencimento || "";
+  el.editPrev.value = String(it.valorPrev);
   el.modalBack.hidden = false;
 }
 function closeEdit(){ editingId = null; el.modalBack.hidden = true; }
-function salvarEdicao(){
+async function salvarEdicao(){
   if(!editingId) return;
-  const categoriaId = el.editCat.value;
-  const subcategoriaId = el.editSub.value;
+  const categoriaId = +el.editCat.value;
+  const subcategoriaId = +el.editSub.value;
   const vencimento = el.editVenc.value || null;
   const valorPrev = parseFloat(String(el.editPrev.value).replace(",", ".")) || 0;
   if(!categoriaId || !subcategoriaId || !valorPrev){ alert("Preencha os campos."); return; }
-  const md = getMonthData();
-  Object.assign(md.entries.find(e=>e.id===editingId), { categoriaId, subcategoriaId, vencimento, valorPrev });
-  setMonthData(md); closeEdit(); render();
+  await apiPost(`${API}/entry_update.php`, { id: +editingId, categoriaId, subcategoriaId, vencimento, valorPrev });
+  closeEdit();
+  cacheEntries = {};
+  await renderAsync();
 }
-function excluirLancamento(id){
+async function excluirLancamento(id){
   if(!confirm("Excluir este lançamento?")) return;
-  const md = getMonthData(); md.entries = md.entries.filter(e=>e.id!==id);
-  setMonthData(md); render();
+  await apiGet(`${API}/entry_delete.php?id=${encodeURIComponent(id)}`);
+  cacheEntries = {};
+  await renderAsync();
 }
-function renderLanc(){
-  const filtro = el.filtroStatus?.value || "todos";
-  const rows = getMonthData().entries
-    .map(e => {
-      const pago = totalPago(e);
-      const previsto = e.valorPrev || 0;
-      const saldo = previsto - pago;
-      const status = pago >= previsto ? "pago" : "pendente";
-      return { e, pago, saldo, status, previsto };
-    })
-    .filter(r => filtro==="todos" ? true : r.status===filtro)
-    .sort((a,b)=>(b.e.criadoEm||"").localeCompare(a.e.criadoEm||""))
-    .map(({e,pago,saldo,status,previsto})=>{
-      const venc = ymdToBR(e.vencimento);
-      return `<tr>
-        <td>
-          <div class="row gap" style="flex-wrap:wrap">
-            <input type="number" step="0.01" min="0" placeholder="R$" id="pay-${e.id}" style="width:80px"/>
-            <input type="date" id="paydate-${e.id}" style="width:120px"/>
-            <button class="btn btn-outline-dark" onclick="addPagamento('${e.id}', document.getElementById('pay-${e.id}').value, document.getElementById('paydate-${e.id}').value)">Pagar</button>
-            <button class="btn btn-outline-dark" onclick="openEditModal('${e.id}')">Editar</button>
-            <button class="btn btn-accent" onclick="excluirLancamento('${e.id}')">Excluir</button>
-          </div>
-        </td>
-        <td>${venc}</td>
-        <td>${esc(catName(e.categoriaId))}</td>
-        <td>${esc(subName(e.subcategoriaId))}</td>
-        <td class="right">${money(previsto)}</td>
-        <td class="right">${money(pago)}</td>
-        <td class="right">${money(saldo)}</td>
-        <td><span class="status ${status}">${status==="pago"?"Pago":"Pendente"}</span></td>
-      </tr>`;
-    }).join("");
-  el.tbLancBody.innerHTML = rows || `<tr><td colspan="8" style="text-align:center;color:#94a3b8;padding:16px">Sem lançamentos.</td></tr>`;
+
+/* ===== Pagamentos ===== */
+async function addPagamento(id, valorStr, dataStr){
+  const valor = parseFloat(String(valorStr).replace(",", ".")) || 0;
+  if(valor<=0){ alert("Informe um valor maior que zero."); return; }
+  await apiPost(`${API}/pagamento_add.php`, { lancamentoId:+id, valor, data: dataStr || todayYMD() });
+  cacheEntries = {};
+  await renderAsync();
 }
 
 /* ===== RELATÓRIO ===== */
-function renderRel(){
-  const map = new Map(); // catId -> {prev,pago,subs: Map(subId->{prev,pago})}
-  for(const it of getMonthData().entries){
-    const prev = +it.valorPrev||0, pago = totalPago(it);
-    if(!map.has(it.categoriaId)) map.set(it.categoriaId, { prev:0, pago:0, subs:new Map() });
-    const c = map.get(it.categoriaId); c.prev+=prev; c.pago+=pago;
-    if(!c.subs.has(it.subcategoriaId)) c.subs.set(it.subcategoriaId, { prev:0, pago:0 });
-    const s = c.subs.get(it.subcategoriaId); s.prev+=prev; s.pago+=pago;
+async function renderRel(){
+  const setor = getActiveSector(), mes = getMonthKey();
+  const rows = await apiGet(`${API}/relatorio.php?setor=${encodeURIComponent(setor)}&mes=${encodeURIComponent(mes)}`);
+  const cat = await getCatalog();
+
+  const map = new Map();
+  for(const item of rows){
+    const { categoriaId, subcategoriaId, prev, pago } = item;
+    if(!map.has(categoriaId)) map.set(categoriaId, { prev:0, pago:0, subs:new Map() });
+    const c = map.get(categoriaId); c.prev+=prev; c.pago+=pago;
+    if(!c.subs.has(subcategoriaId)) c.subs.set(subcategoriaId, { prev:0, pago:0 });
+    const s = c.subs.get(subcategoriaId); s.prev+=prev; s.pago+=pago;
   }
 
   let totPrev=0, totPago=0, html="";
-  const cats = [...map.entries()].sort((a,b)=>catName(a[0]).localeCompare(catName(b[0])));
+  const cats = [...map.entries()].sort((a,b)=>{
+    const an = cat.categories.find(x=>x.id==a[0])?.name || "";
+    const bn = cat.categories.find(x=>x.id==b[0])?.name || "";
+    return an.localeCompare(bn);
+  });
   for(const [catId, c] of cats){
     const difC = c.prev - c.pago, percC = c.prev>0 ? (c.pago/c.prev)*100 : 0;
     html += `<tr style="background:#f0fbff">
-      <td colspan="2"><strong>${esc(catName(catId))}</strong></td>
+      <td colspan="2"><strong>${(cat.categories.find(x=>x.id==catId)?.name)||"(categoria)"}</strong></td>
       <td class="right"><strong>${money(c.prev)}</strong></td>
       <td class="right"><strong>${money(c.pago)}</strong></td>
       <td class="right"><strong>${money(difC)}</strong></td>
       <td class="right"><strong>${percC.toFixed(0)}%</strong></td>
     </tr>`;
 
-    const subs = [...c.subs.entries()].sort((a,b)=>subName(a[0]).localeCompare(subName(b[0])));
+    const subs = [...c.subs.entries()].sort((a,b)=>{
+      const an = cat.subcategories.find(x=>x.id==a[0])?.name || "";
+      const bn = cat.subcategories.find(x=>x.id==b[0])?.name || "";
+      return an.localeCompare(bn);
+    });
     for(const [subId, s] of subs){
       const dif = s.prev - s.pago, perc = s.prev>0 ? (s.pago/s.prev)*100 : 0;
       html += `<tr>
-        <td></td><td>${esc(subName(subId))}</td>
+        <td></td><td>${(cat.subcategories.find(x=>x.id==subId)?.name)||"(subcategoria)"}</td>
         <td class="right">${money(s.prev)}</td>
         <td class="right">${money(s.pago)}</td>
         <td class="right">${money(dif)}</td>
@@ -305,40 +204,29 @@ function renderRel(){
 }
 
 /* ===== HISTÓRICO ===== */
-function renderHist(){
-  const items = [];
-  for(const e of getMonthData().entries){
-    for(const p of (e.pagamentos||[])){
-      items.push({
-        data: p.data || todayYMD(),
-        valor: +p.valor||0,
-        categoria: catName(e.categoriaId),
-        subcategoria: subName(e.subcategoriaId),
-        venc: e.vencimento || null,
-        previsto: +e.valorPrev||0
-      });
-    }
-  }
-  items.sort((a,b)=>(b.data||"").localeCompare(a.data||""));
-  el.tbHistBody.innerHTML = items.map(i=>{
+async function renderHist(){
+  const setor = getActiveSector(), mes = getMonthKey();
+  const items = await apiGet(`${API}/historico_list.php?setor=${encodeURIComponent(setor)}&mes=${encodeURIComponent(mes)}`);
+  const cat = await getCatalog();
+  el.tbHistBody.innerHTML = (items || []).map(i=>{
     const d = ymdToBR(i.data);
-    const v = ymdToBR(i.venc);
+    const v = ymdToBR(i.vencimento);
+    const cn = cat.categories.find(x=>x.id==i.categoriaId)?.name || "(categoria)";
+    const sn = cat.subcategories.find(x=>x.id==i.subcategoriaId)?.name || "(subcategoria)";
     return `<tr>
-  <td>${d}</td><td>${esc(i.categoria)}</td><td>${esc(i.subcategoria)}</td>
-  <td class="right">${money(i.valor)}</td><td>${v}</td><td class="right">${money(i.previsto)}</td>
-</tr>`;
+      <td>${d}</td><td>${cn}</td><td>${sn}</td>
+      <td class="right">${money(i.valor)}</td><td>${v}</td><td class="right">${money(i.valorPrevisto)}</td>
+    </tr>`;
   }).join("") || `<tr><td colspan="6" style="text-align:center;color:#94a3b8;padding:16px">Sem pagamentos lançados.</td></tr>`;
 }
 
-/* ===== Categorias (CRUD) ===== */
-function renderCats(){
-  const {categories, subcategories} = getCatalog();
-
-  // tabela de categorias
+/* ===== Categorias ===== */
+async function renderCats(){
+  const {categories, subcategories} = await getCatalog();
   el.tbCatsBody.innerHTML = categories.map(c=>{
     const count = subcategories.filter(s=>s.categoryId===c.id).length;
     return `<tr>
-      <td>${esc(c.name)}</td><td>${count}</td>
+      <td>${c.name}</td><td>${count}</td>
       <td class="right">
         <button class="btn btn-outline-dark" onclick="renameCategory('${c.id}')">Renomear</button>
         <button class="btn btn-accent" onclick="deleteCategory('${c.id}')">Excluir</button>
@@ -346,15 +234,14 @@ function renderCats(){
     </tr>`;
   }).join("") || `<tr><td colspan="3" style="text-align:center;color:#94a3b8;padding:12px">Sem categorias</td></tr>`;
 
-  // selects
-  fillCatSelect(el.catParaSub);
+  const opts = categories.map(c=>`<option value="${c.id}">${c.name}</option>`).join("");
+  el.catParaSub.innerHTML = `<option value="">Selecione...</option>` + opts;
 
-  // subcategorias
   const rows = subcategories.slice().sort((a,b)=>{
-    const ca = catName(a.categoryId).localeCompare(catName(b.categoryId));
-    return ca!==0?ca:a.name.localeCompare(b.name);
+    const ca = (categories.find(x=>x.id===a.categoryId)?.name || "").localeCompare((categories.find(x=>x.id===b.categoryId)?.name || ""));
+    return ca!==0?ca:(a.name||"").localeCompare(b.name||"");
   }).map(s=>`<tr>
-    <td>${esc(catName(s.categoryId))}</td><td>${esc(s.name)}</td>
+    <td>${(categories.find(x=>x.id===s.categoryId)?.name)||"(categoria)"}</td><td>${s.name}</td>
     <td class="right">
       <button class="btn btn-outline-dark" onclick="renameSub('${s.id}')">Renomear</button>
       <button class="btn btn-accent" onclick="deleteSub('${s.id}')">Excluir</button>
@@ -362,141 +249,249 @@ function renderCats(){
   </tr>`).join("");
   el.tbSubsBody.innerHTML = rows || `<tr><td colspan="3" style="text-align:center;color:#94a3b8;padding:12px">Sem subcategorias</td></tr>`;
 }
-function addCategory(){
+
+async function addCategory(){
   const name = (el.novaCategoria.value||"").trim();
   if(!name){ alert("Informe o nome da categoria."); return; }
-  const cat = getCatalog();
-  if(cat.categories.some(c=>c.name.toLowerCase()===name.toLowerCase())){ alert("Categoria já existe."); return; }
-  cat.categories.push({ id:uuid(), name }); setCatalog(cat);
-  el.novaCategoria.value=""; renderCats(); fillCatSelect(el.categoria); el.subcategoria.innerHTML = `<option value="">Selecione...</option>`;
+  await apiPost(`${API}/category_add.php`, { name });
+  el.novaCategoria.value=""; await renderCats(); await renderAsync();
 }
-function renameCategory(id){
-  const cat = getCatalog(); const c = cat.categories.find(x=>x.id===id); if(!c) return;
-  const novo = prompt("Novo nome da categoria:", c.name); if(novo===null) return;
+async function renameCategory(id){
+  const novo = prompt("Novo nome da categoria:"); if(novo===null) return;
   const name = novo.trim(); if(!name){ alert("Nome inválido."); return; }
-  if(cat.categories.some(x=>x.id!==id && x.name.toLowerCase()===name.toLowerCase())){ alert("Já existe outra categoria com esse nome."); return; }
-  c.name = name; setCatalog(cat); renderCats(); render();
+  await apiPost(`${API}/category_rename.php`, { id:+id, name });
+  await renderCats(); await renderAsync();
 }
-function deleteCategory(id){
-  const cat = getCatalog();
-  if(cat.subcategories.some(s=>s.categoryId===id)){ alert("Remova/realocar subcategorias antes."); return; }
-  if(isCategoryUsed(id)){ alert("Categoria em uso em lançamentos."); return; }
+async function deleteCategory(id){
   if(!confirm("Excluir categoria?")) return;
-  cat.categories = cat.categories.filter(c=>c.id!==id); setCatalog(cat); renderCats(); render();
+  const d = await fetch(`${API}/category_delete.php?id=${encodeURIComponent(id)}`);
+  const j = await d.json(); if(!j.ok){ alert(j.erro||"Não foi possível excluir"); return; }
+  await renderCats(); await renderAsync();
 }
-function addSub(){
+async function addSub(){
   const categoryId = el.catParaSub.value; const name = (el.novaSubcat.value||"").trim();
   if(!categoryId){ alert("Selecione a categoria."); return; }
   if(!name){ alert("Informe o nome da subcategoria."); return; }
-  const cat = getCatalog();
-  if(cat.subcategories.some(s=>s.categoryId===categoryId && s.name.toLowerCase()===name.toLowerCase())){ alert("Subcategoria já existe nessa categoria."); return; }
-  cat.subcategories.push({ id:uuid(), categoryId, name }); setCatalog(cat);
-  el.novaSubcat.value=""; renderCats(); if(el.categoria.value===categoryId) fillSubSelect(el.subcategoria, categoryId);
+  await apiPost(`${API}/sub_add.php`, { categoryId:+categoryId, name });
+  el.novaSubcat.value=""; await renderCats(); if(el.categoria.value===categoryId) await renderAsync();
 }
-function renameSub(id){
-  const cat = getCatalog(); const s = cat.subcategories.find(x=>x.id===id); if(!s) return;
-  const novo = prompt("Novo nome da subcategoria:", s.name); if(novo===null) return;
+async function renameSub(id){
+  const novo = prompt("Novo nome da subcategoria:"); if(novo===null) return;
   const name = novo.trim(); if(!name){ alert("Nome inválido."); return; }
-  if(cat.subcategories.some(x=>x.id!==id && x.categoryId===s.categoryId && x.name.toLowerCase()===name.toLowerCase())){ alert("Já existe outra subcategoria com esse nome."); return; }
-  s.name = name; setCatalog(cat); renderCats(); render();
+  await apiPost(`${API}/sub_rename.php`, { id:+id, name });
+  await renderCats(); await renderAsync();
 }
-function isCategoryUsed(categoryId){
-  const all = getAllDataV2();
-  return Object.values(all).some(sectorObj =>
-    Object.values(sectorObj || {}).some(md => (md.entries||[]).some(e=>e.categoriaId===categoryId))
-  );
+async function deleteSub(id){
+  if(!confirm("Excluir subcategoria?")) return;
+  const d = await fetch(`${API}/sub_delete.php?id=${encodeURIComponent(id)}`);
+  const j = await d.json(); if(!j.ok){ alert(j.erro||"Não foi possível excluir"); return; }
+  await renderCats(); await renderAsync();
 }
-function isSubUsed(subId){
-  const all = getAllDataV2();
-  return Object.values(all).some(sectorObj =>
-    Object.values(sectorObj || {}).some(md => (md.entries||[]).some(e=>e.subcategoriaId===subId))
-  );
+
+/* ===== Exportações ===== */
+// Gera CSV (abre no Excel)
+function exportTable(tableId, filename){
+  const table = document.getElementById(tableId);
+  if(!table){ alert("Tabela não encontrada"); return; }
+  const rows = [...table.rows];
+  let csv = rows.map(row => {
+    const cols = [...row.cells].map(c => `"${(c.innerText||"").replace(/"/g,'""')}"`);
+    return cols.join(";");
+  }).join("\n");
+  const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = `${filename}.csv`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+}
+
+// PDF simples via janela de impressão
+function exportPDF(tableId, filename){
+  const table = document.getElementById(tableId);
+  if(!table){ alert("Tabela não encontrada"); return; }
+  const win = window.open("", "_blank");
+  win.document.write(`<html><head><title>${filename}</title>
+    <style>
+      body{font-family:Arial; padding:20px;}
+      h2{margin:0 0 12px 0;}
+      table{border-collapse:collapse; width:100%;}
+      th,td{border:1px solid #ccc; padding:6px; font-size:12px; text-align:center;}
+      th{background:#f0f0f0;}
+    </style>
+    </head><body>`);
+  win.document.write(`<h2>${filename.replaceAll("_"," ").toUpperCase()}</h2>`);
+  win.document.write(table.outerHTML);
+  win.document.write("</body></html>");
+  win.document.close();
+  win.focus();
+  win.print();
 }
 
 /* ===== navegação/tabs & mês ===== */
 function setupTabs(){
   el.tabBtns.forEach(btn=>{
-    btn.addEventListener("click", ()=>{
+    btn.addEventListener("click", async ()=>{
       el.tabBtns.forEach(b=>b.classList.remove("active"));
       el.tabs.forEach(t=>t.classList.remove("active"));
       btn.classList.add("active");
       document.getElementById(btn.dataset.tab).classList.add("active");
 
-      if(btn.dataset.tab==="tabRel") renderRel();
-      if(btn.dataset.tab==="tabCats") renderCats();
-      if(btn.dataset.tab==="tabMes") renderPrevMes();
-      if(btn.dataset.tab==="tabDiario") renderLanc();
-      if(btn.dataset.tab==="tabHist") renderHist();
+      if(btn.dataset.tab==="tabRel") await renderRel();
+      if(btn.dataset.tab==="tabCats") await renderCats();
+      if(btn.dataset.tab==="tabMes")  await renderAsync();
+      if(btn.dataset.tab==="tabDiario")await renderAsync();
+      if(btn.dataset.tab==="tabHist") await renderHist();
     });
   });
 }
 const setDefaultMonth = () => { el.mesRef.value = monthKeyLocal(); };
-function clearMonth(){
+
+async function clearMonth(){
   if(!confirm("Limpar TODOS os lançamentos do mês selecionado (apenas do setor ativo)?")) return;
-  const sector = getActiveSector(); const mKey = getMonthKey();
-  const all = getAllDataV2();
-  if (!all[sector]) all[sector] = {};
-  all[sector][mKey] = { entries: [] };
-  setAllDataV2(all); render();
+  await apiPost(`${API}/month_clear.php`, { setor: getActiveSector(), mes: getMonthKey() });
+  cacheEntries = {};
+  await renderAsync();
 }
 
 /* ===== render global ===== */
-function render(){
-  // selects do formulário de previsão
-  fillCatSelect(el.categoria); if(el.categoria.value) fillSubSelect(el.subcategoria, el.categoria.value);
-  else el.subcategoria.innerHTML = `<option value="">Selecione...</option>`;
+async function renderAsync(){
+  const cat = await getCatalog();
 
-  renderPrevMes();
-  renderLanc();
+  // preserve seleção atual
+  const selectedCat = el.categoria?.value || "";
+  const selectedSub = el.subcategoria?.value || "";
 
-  // resumo
-  const entries = getMonthData().entries;
-  const totPrev = entries.reduce((a,it)=>a+(+it.valorPrev||0),0);
-  const totPago = entries.reduce((a,it)=>a+totalPago(it),0);
+  // categorias
+  const catOpts = cat.categories.map(c=>`<option value="${c.id}">${c.name}</option>`).join("");
+  el.categoria.innerHTML = `<option value="">Selecione...</option>` + catOpts;
+
+  if (selectedCat && cat.categories.some(c => String(c.id) === String(selectedCat))) {
+    el.categoria.value = selectedCat;
+  }
+
+  // subcategorias de acordo com a categoria atual
+  const currentCatId = el.categoria.value || "";
+  const subOpts = currentCatId
+    ? cat.subcategories.filter(s => String(s.categoryId) === String(currentCatId))
+        .map(s => `<option value="${s.id}">${s.name}</option>`).join("")
+    : "";
+  el.subcategoria.innerHTML = `<option value="">Selecione...</option>` + subOpts;
+
+  if (selectedSub && subOpts && cat.subcategories.some(s =>
+      String(s.id) === String(selectedSub) && String(s.categoryId) === String(currentCatId))) {
+    el.subcategoria.value = selectedSub;
+  }
+
+  const md = await getMonthDataAsync();
+
+  // Previsões do mês
+  const rowsPrev = md.entries.slice().sort((a,b)=>{
+    const av=a.vencimento||"9999-12-31", bv=b.vencimento||"9999-12-31";
+    if(av!==bv) return av.localeCompare(bv);
+    const an = (cat.categories.find(x=>x.id==a.categoriaId)?.name||"").localeCompare(cat.categories.find(x=>x.id==b.categoriaId)?.name||"");
+    if(an!==0) return an;
+    const asn = cat.subcategories.find(x=>x.id==a.subcategoriaId)?.name || "";
+    const bsn = cat.subcategories.find(x=>x.id==b.subcategoriaId)?.name || "";
+    return asn.localeCompare(bsn);
+  }).map(e=>{
+    const venc = ymdToBR(e.vencimento);
+    const cn = cat.categories.find(x=>x.id==e.categoriaId)?.name || "(categoria)";
+    const sn = cat.subcategories.find(x=>x.id==e.subcategoriaId)?.name || "(subcategoria)";
+    return `<tr>
+      <td>${venc}</td><td>${cn}</td><td>${sn}</td>
+      <td class="right">${money(e.valorPrev)}</td>
+    </tr>`;
+  }).join("");
+  el.tbPrevMesBody.innerHTML = rowsPrev || `<tr><td colspan="4" style="text-align:center;color:#94a3b8;padding:16px">Nenhuma previsão lançada.</td></tr>`;
+
+  // Lançamentos diários + resumo
+  const rowsLanc = md.entries.map(e=>{
+    const pago = (e.pagamentos||[]).reduce((a,p)=>a+(+p.valor||0),0);
+    const previsto = +e.valorPrev||0;
+    const saldo = previsto - pago;
+    const status = pago >= previsto ? "pago" : "pendente";
+    const venc = ymdToBR(e.vencimento);
+    const cn = cat.categories.find(x=>x.id==e.categoriaId)?.name || "(categoria)";
+    const sn = cat.subcategories.find(x=>x.id==e.subcategoriaId)?.name || "(subcategoria)";
+    return { e,pago,previsto,saldo,status,row:
+      `<tr>
+        <td>
+          <div class="row gap" style="flex-wrap:wrap">
+            <input type="number" step="0.01" min="0" placeholder="R$" id="pay-${e.id}" style="width:80px"/>
+            <input type="date" id="paydate-${e.id}" style="width:120px"/>
+            <button class="btn btn-outline-dark" onclick="addPagamento('${e.id}', document.getElementById('pay-${e.id}').value, document.getElementById('paydate-${e.id}').value)">Pagar</button>
+            <button class="btn btn-outline-dark" onclick="openEditModal('${e.id}')">Editar</button>
+            <button class="btn btn-accent" onclick="excluirLancamento('${e.id}')">Excluir</button>
+          </div>
+        </td>
+        <td>${venc}</td>
+        <td>${cn}</td>
+        <td>${sn}</td>
+        <td class="right">${money(previsto)}</td>
+        <td class="right">${money(pago)}</td>
+        <td class="right">${money(saldo)}</td>
+        <td><span class="status ${status}">${status==="pago"?"Pago":"Pendente"}</span></td>
+      </tr>`
+    };
+  });
+
+  const filtro = el.filtroStatus?.value || "todos";
+  const filtered = rowsLanc.filter(r => filtro==="todos" ? true : r.status===filtro);
+  el.tbLancBody.innerHTML = filtered.map(r=>r.row).join("") || `<tr><td colspan="8" style="text-align:center;color:#94a3b8;padding:16px">Sem lançamentos.</td></tr>`;
+
+  const totPrev = rowsLanc.reduce((a,r)=>a+r.previsto,0);
+  const totPago = rowsLanc.reduce((a,r)=>a+r.pago,0);
   const dif = totPrev - totPago;
-  const perc = totPrev>0 ? (totPago/totPrev)*100 : 0;
+  const perc = totPrev>0 ? (totPago/totPrev*100) : 0;
   el.sumPrevisto.textContent = money(totPrev);
   el.sumPago.textContent = money(totPago);
   el.sumDiferenca.textContent = money(dif);
   el.sumPercent.textContent = `${perc.toFixed(0)}%`;
-
-  // re-render se a aba já estiver aberta
-  if($("#tabRel")?.classList.contains("active")) renderRel();
-  if($("#tabHist")?.classList.contains("active")) renderHist();
 }
 
 /* ===== eventos ===== */
 function setupEvents(){
-  // setor
-  el.sectorBtns.forEach(btn=>{
-    btn.addEventListener("click", ()=> setActiveSector(btn.dataset.sector));
+  el.sectorBtns.forEach(btn=> btn.addEventListener("click", ()=> setActiveSector(btn.dataset.sector)) );
+
+  el.formPrev?.addEventListener("submit", onAddPrevisao);
+
+  // Corrigido: atualizar apenas as subcategorias ao trocar a categoria
+  el.categoria?.addEventListener("change", async () => {
+    const cat = await getCatalog();
+    const categoryId = el.categoria.value;
+    const opts = cat.subcategories
+      .filter(s => String(s.categoryId) === String(categoryId))
+      .map(s => `<option value="${s.id}">${s.name}</option>`).join("");
+    el.subcategoria.innerHTML = `<option value="">Selecione...</option>` + opts;
   });
 
-  // seus já existentes
-  el.formPrev?.addEventListener("submit", onAddPrevisao);
-  el.categoria?.addEventListener("change", ()=>fillSubSelect(el.subcategoria, el.categoria.value));
-  el.filtroStatus?.addEventListener("change", renderLanc);
+  el.filtroStatus?.addEventListener("change", renderAsync);
   el.btnAtualizarRel?.addEventListener("click", renderRel);
   el.btnNovoMes?.addEventListener("click", clearMonth);
-  el.mesRef?.addEventListener("change", render);
+  el.mesRef?.addEventListener("change", renderAsync);
   el.btnAddCat?.addEventListener("click", addCategory);
   el.btnAddSub?.addEventListener("click", addSub);
   el.btnSalvarEdit?.addEventListener("click", salvarEdicao);
   el.btnCancelarEdit?.addEventListener("click", closeEdit);
-  el.editCat?.addEventListener("change", ()=>fillSubSelect(el.editSub, el.editCat.value, false));
+  el.editCat?.addEventListener("change", async ()=>{
+    const cat = await getCatalog();
+    const subs = cat.subcategories.filter(s=>s.categoryId==el.editCat.value);
+    el.editSub.innerHTML = subs.map(s=>`<option value="${s.id}">${s.name}</option>`).join("");
+  });
 }
 
-/* ===== init ===== */
 (function init(){
-  migrateV1toV2();         // move dados antigos para ODONTOLOGIA
   setupTabs(); setupEvents();
   if(!el.mesRef.value) setDefaultMonth();
-  getCatalog();            // garante estrutura no localStorage
-  // setor inicial
   setActiveSector(document.documentElement.getAttribute("data-sector") || DEFAULT_SECTOR);
 })();
- 
-/* ===== expõe p/ botões inline ===== */
+
+/* expose */
 window.addPagamento = addPagamento;
 window.openEditModal = openEditModal;
 window.excluirLancamento = excluirLancamento;
+window.exportTable = exportTable;
+window.exportPDF = exportPDF;
+window.makeFileName = makeFileName;

@@ -8,7 +8,6 @@
   <link rel="stylesheet" href="style.css" />
 </head>
 <body>
-  <!-- BLOQUEIO: exige login exclusivo do financeiro -->
   <script>
     if (!sessionStorage.getItem('pxr_logado')) {
       window.location.href = 'login_pxr.html';
@@ -25,25 +24,24 @@
         </div>
       </div>
 
-          <div class="header-tools">
-      <div class="sector-switch" role="tablist" aria-label="Trocar setor">
-        <button class="sector-btn" data-sector="ODONTOLOGIA" aria-pressed="true">Odontologia</button>
-        <button class="sector-btn" data-sector="MEDICINA" aria-pressed="false">Medicina</button>
-      </div>
-    
-      <div class="month-inline">
-        <label for="mesRef">Mês de referência</label>
-        <input type="month" id="mesRef" />
-        <button id="btnNovoMes" class="btn btn-outline-light" title="Limpar dados do mês selecionado">Limpar</button>
-      </div>
-    
-      <button class="btn" onclick="window.location.href='/hub.html'">↪ Hub de Sistemas</button>
-    </div>
+      <div class="header-tools">
+        <div class="sector-switch" role="tablist" aria-label="Trocar setor">
+          <button class="sector-btn" data-sector="ODONTOLOGIA" aria-pressed="true">Odontologia</button>
+          <button class="sector-btn" data-sector="MEDICINA" aria-pressed="false">Medicina</button>
         </div>
+
+        <div class="month-inline">
+          <label for="mesRef">Mês de referência</label>
+          <input type="month" id="mesRef" />
+          <button id="btnNovoMes" class="btn btn-outline-light" title="Limpar dados do mês selecionado">Limpar</button>
+        </div>
+
+        <button class="btn" onclick="window.location.href='/hub.html'">↪ Hub de Sistemas</button>
+      </div>
+    </div>
   </header>
 
   <main class="wrap">
-    <!-- Resumo -->
     <section class="summary">
       <div class="kpi"><span>Total Previsto</span><strong id="sumPrevisto">R$ 0,00</strong></div>
       <div class="kpi"><span>Total Pago</span>    <strong id="sumPago">R$ 0,00</strong></div>
@@ -51,7 +49,6 @@
       <div class="kpi"><span>% Realizado</span>   <strong id="sumPercent">0%</strong></div>
     </section>
 
-    <!-- Abas -->
     <nav class="tabs">
       <button class="tab-btn active" data-tab="tabMes">Despesas do Mês</button>
       <button class="tab-btn" data-tab="tabDiario">Lançamentos Diários</button>
@@ -64,7 +61,6 @@
     <section id="tabMes" class="tab active">
       <form id="formPrev" class="card" autocomplete="off" novalidate>
         <h2>Lançar previsão (início do mês)</h2>
-
         <div class="grid-2">
           <div>
             <label for="categoria">Categoria</label>
@@ -89,8 +85,14 @@
         <p class="hint">Categorias/Subcategorias são fixas (aba <b>Categorias</b>).</p>
       </form>
 
-      <div class="card">
-        <h2>Previsões do mês</h2>
+      <div class="card card-predictions">
+        <div class="row between center">
+          <h2>Previsões do mês</h2>
+          <div class="row end gap">
+            <button class="btn btn-outline-dark" onclick="exportTable('tbPrevMes', makeFileName('previsoes'))">📊 Excel</button>
+            <button class="btn btn-outline-dark" onclick="exportPDF('tbPrevMes', makeFileName('previsoes'))">📄 PDF</button>
+          </div>
+        </div>
         <div class="table-wrap">
           <table class="table" id="tbPrevMes">
             <thead>
@@ -101,7 +103,7 @@
                 <th class="right">Previsto</th>
               </tr>
             </thead>
-            <tbody><!-- via JS --></tbody>
+            <tbody></tbody>
           </table>
         </div>
       </div>
@@ -133,7 +135,7 @@
                 <th>Status</th>
               </tr>
             </thead>
-            <tbody><!-- via JS --></tbody>
+            <tbody></tbody>
           </table>
         </div>
       </div>
@@ -144,7 +146,11 @@
       <div class="card">
         <div class="row between center">
           <h2>Relatório por Categoria / Subcategoria</h2>
-          <button id="btnAtualizarRel" class="btn btn-outline-dark">Atualizar</button>
+          <div class="row end gap">
+            <button id="btnAtualizarRel" class="btn btn-outline-dark">Atualizar</button>
+            <button class="btn btn-outline-dark" onclick="exportTable('tbRel', makeFileName('relatorio'))">📊 Excel</button>
+            <button class="btn btn-outline-dark" onclick="exportPDF('tbRel', makeFileName('relatorio'))">📄 PDF</button>
+          </div>
         </div>
         <div class="table-wrap">
           <table class="table" id="tbRel">
@@ -158,7 +164,7 @@
                 <th class="right">% Realizado</th>
               </tr>
             </thead>
-            <tbody><!-- via JS --></tbody>
+            <tbody></tbody>
             <tfoot>
               <tr class="tfoot">
                 <td colspan="2">Totais</td>
@@ -173,7 +179,7 @@
       </div>
     </section>
 
-    <!-- CATEGORIAS -->
+    <!-- CATEGORIAS (RESTAURADA) -->
     <section id="tabCats" class="tab">
       <div class="grid-2">
         <div class="card">
@@ -185,7 +191,7 @@
           <div class="table-wrap">
             <table class="table" id="tbCats">
               <thead><tr><th>Categoria</th><th>Subcats</th><th class="right">Ações</th></tr></thead>
-              <tbody><!-- via JS --></tbody>
+              <tbody></tbody>
             </table>
           </div>
         </div>
@@ -200,7 +206,7 @@
           <div class="table-wrap">
             <table class="table" id="tbSubs">
               <thead><tr><th>Categoria</th><th>Subcategoria</th><th class="right">Ações</th></tr></thead>
-              <tbody><!-- via JS --></tbody>
+              <tbody></tbody>
             </table>
           </div>
           <p class="hint">Não é possível excluir itens em uso.</p>
@@ -211,7 +217,13 @@
     <!-- HISTÓRICO -->
     <section id="tabHist" class="tab">
       <div class="card">
-        <h2>Histórico de Pagamentos (mês atual)</h2>
+        <div class="row between center">
+          <h2>Histórico de Pagamentos (mês atual)</h2>
+          <div class="row end gap">
+            <button class="btn btn-outline-dark" onclick="exportTable('tbHist', makeFileName('historico'))">📊 Excel</button>
+            <button class="btn btn-outline-dark" onclick="exportPDF('tbHist', makeFileName('historico'))">📄 PDF</button>
+          </div>
+        </div>
         <div class="table-wrap">
           <table class="table" id="tbHist">
             <thead>
@@ -224,18 +236,16 @@
                 <th class="right">Previsto</th>
               </tr>
             </thead>
-            <tbody><!-- via JS --></tbody>
+            <tbody></tbody>
           </table>
         </div>
       </div>
     </section>
   </main>
 
-  <!-- Modal editar -->
   <div id="modalBack" class="backdrop" hidden>
     <div class="modal">
       <h3>Editar lançamento</h3>
-
       <div class="grid-2">
         <div>
           <label for="editCat">Categoria</label>
@@ -261,18 +271,9 @@
   </div>
 
   <footer class="wrap foot">
-    <small>Dados de categorias são <b>globais</b>; lançamentos são por <b>setor + mês</b> (localStorage).</small>
+    <small>Dados de categorias são <b>globais</b>; lançamentos são por <b>setor + mês</b> (MySQL).</small>
   </footer>
 
-  <!-- Failsafe: garante modal fechado ao carregar -->
-  <script>
-    document.addEventListener('DOMContentLoaded', () => {
-      const back = document.getElementById('modalBack');
-      if (back && back.hidden !== true) back.hidden = true;
-    });
-  </script>
-
-  <!-- JS principal -->
-  <script src="script.js?v=4"></script>
+  <script src="script.js?v=6"></script>
 </body>
 </html>
