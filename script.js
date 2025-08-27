@@ -1,11 +1,11 @@
-/* ========= PxR com Setores + MySQL API + Exportação ========= */
+/* ========= PxR com Setores + MySQL API + Exportação robusta ========= */
 const API = "/previsto-realizado/api/pxr"; // ajuste se sua API estiver em outro caminho
 
 const SECTORS = { ODONTOLOGIA: "ODONTOLOGIA", MEDICINA: "MEDICINA" };
 const DEFAULT_SECTOR = SECTORS.ODONTOLOGIA;
 
 /* ===== atalhos / utils ===== */
-const $ = (sel) => document.querySelector(sel);
+const $  = (sel) => document.querySelector(sel);
 const $$ = (sel) => [...document.querySelectorAll(sel)];
 const el = {
   mesRef: $("#mesRef"), btnNovoMes: $("#btnNovoMes"),
@@ -48,9 +48,19 @@ function setActiveSector(sector){
 }
 
 /* ===== Datas ===== */
-function todayYMD(){ const d=new Date(); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`; }
-function monthKeyLocal(){ const d=new Date(); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}`; }
-function ymdToBR(ymd){ if(!ymd) return "—"; const [y,m,d]=String(ymd).split("-"); return `${d?.padStart(2,"0")}/${m?.padStart(2,"0")}/${y}`; }
+function todayYMD(){
+  const d=new Date();
+  return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;
+}
+function monthKeyLocal(){
+  const d=new Date();
+  return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}`;
+}
+function ymdToBR(ymd){
+  if(!ymd) return "—";
+  const [y,m,d]=String(ymd).split("-");
+  return `${String(d).padStart(2,"0")}/${String(m).padStart(2,"0")}/${y}`;
+}
 
 /* ===== Nome de arquivo amigável ===== */
 function makeFileName(prefix){
@@ -61,13 +71,17 @@ function makeFileName(prefix){
 
 /* ===== API helpers ===== */
 async function apiGet(url){
-  const r = await fetch(url);
+  const r = await fetch(url, { headers: { "Accept": "application/json" }});
   const j = await r.json().catch(()=>({ok:false, erro:"Resposta inválida"}));
   if(!j.ok) throw new Error(j.erro || "Erro de API");
   return j.data;
 }
 async function apiPost(url, payload){
-  const r = await fetch(url, { method:"POST", body: JSON.stringify(payload) });
+  const r = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "Accept":"application/json" },
+    body: JSON.stringify(payload)
+  });
   const j = await r.json().catch(()=>({ok:false, erro:"Resposta inválida"}));
   if(!j.ok) throw new Error(j.erro || "Erro de API");
   return j.data;
@@ -148,12 +162,13 @@ async function addPagamento(id, valorStr, dataStr){
   await renderAsync();
 }
 
-/* ===== RELATÓRIO ===== */
+/* ===== RELATÓRIO (hierárquico e compacto) ===== */
 async function renderRel(){
   const setor = getActiveSector(), mes = getMonthKey();
   const rows = await apiGet(`${API}/relatorio.php?setor=${encodeURIComponent(setor)}&mes=${encodeURIComponent(mes)}`);
   const cat = await getCatalog();
 
+  // Agrupa por categoria
   const map = new Map();
   for(const item of rows){
     const { categoriaId, subcategoriaId, prev, pago } = item;
@@ -164,38 +179,50 @@ async function renderRel(){
   }
 
   let totPrev=0, totPago=0, html="";
+
   const cats = [...map.entries()].sort((a,b)=>{
     const an = cat.categories.find(x=>x.id==a[0])?.name || "";
     const bn = cat.categories.find(x=>x.id==b[0])?.name || "";
     return an.localeCompare(bn);
   });
+
   for(const [catId, c] of cats){
+    const catName = cat.categories.find(x=>x.id==catId)?.name || "(categoria)";
     const difC = c.prev - c.pago, percC = c.prev>0 ? (c.pago/c.prev)*100 : 0;
-    html += `<tr style="background:#f0fbff">
-      <td colspan="2"><strong>${(cat.categories.find(x=>x.id==catId)?.name)||"(categoria)"}</strong></td>
+
+    // Linha "total da categoria"
+    html += `<tr class="rel-cat">
+      <td colspan="2"><strong title="${catName}">${catName}</strong></td>
       <td class="right"><strong>${money(c.prev)}</strong></td>
       <td class="right"><strong>${money(c.pago)}</strong></td>
       <td class="right"><strong>${money(difC)}</strong></td>
       <td class="right"><strong>${percC.toFixed(0)}%</strong></td>
     </tr>`;
 
+    // Linhas das subcategorias (abaixo)
     const subs = [...c.subs.entries()].sort((a,b)=>{
       const an = cat.subcategories.find(x=>x.id==a[0])?.name || "";
       const bn = cat.subcategories.find(x=>x.id==b[0])?.name || "";
       return an.localeCompare(bn);
     });
     for(const [subId, s] of subs){
+      const subName = cat.subcategories.find(x=>x.id==subId)?.name || "(subcategoria)";
       const dif = s.prev - s.pago, perc = s.prev>0 ? (s.pago/s.prev)*100 : 0;
-      html += `<tr>
-        <td></td><td>${(cat.subcategories.find(x=>x.id==subId)?.name)||"(subcategoria)"}</td>
+      html += `<tr class="rel-sub">
+        <td></td><td title="${subName}">${subName}</td>
         <td class="right">${money(s.prev)}</td>
         <td class="right">${money(s.pago)}</td>
         <td class="right">${money(dif)}</td>
         <td class="right">${perc.toFixed(0)}%</td>
       </tr>`;
     }
+
+    // Espaço entre grupos
+    html += `<tr class="relgap"><td colspan="6"></td></tr>`;
+
     totPrev+=c.prev; totPago+=c.pago;
   }
+
   el.tbRelBody.innerHTML = html || `<tr><td colspan="6" style="text-align:center;color:#94a3b8;padding:16px">Sem dados para este mês.</td></tr>`;
   el.relTotPrev.textContent = money(totPrev);
   el.relTotPago.textContent = money(totPago);
@@ -289,25 +316,96 @@ async function deleteSub(id){
 }
 
 /* ===== Exportações ===== */
-// Gera CSV (abre no Excel)
-function exportTable(tableId, filename){
-  const table = document.getElementById(tableId);
-  if(!table){ alert("Tabela não encontrada"); return; }
-  const rows = [...table.rows];
-  let csv = rows.map(row => {
-    const cols = [...row.cells].map(c => `"${(c.innerText||"").replace(/"/g,'""')}"`);
-    return cols.join(";");
-  }).join("\n");
-  const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
-  const a = document.createElement("a");
-  a.href = URL.createObjectURL(blob);
-  a.download = `${filename}.csv`;
+
+// --- helper genérico de download (Blob) ---
+function downloadBlob(data, mime, filename){
+  const blob = new Blob([data], { type: mime });
+  const url  = URL.createObjectURL(blob);
+  const a    = document.createElement("a");
+  a.style.display = "none";
+  a.href = url;
+  a.download = filename;
   document.body.appendChild(a);
   a.click();
   a.remove();
+  setTimeout(()=>URL.revokeObjectURL(url), 0);
 }
 
-// PDF simples via janela de impressão
+// --- tabela -> matriz de strings "limpas" ---
+function tableToMatrix(table){
+  const rows = [];
+  for(const tr of table.rows){
+    const cells = [];
+    for(const td of tr.cells){
+      let t = (td.innerText || "")
+        .replace(/\u00A0/g, " ")   // NBSP -> espaço normal
+        .replace(/\s+/g, " ")      // comprime espaços
+        .trim();
+      cells.push(t);
+    }
+    rows.push(cells);
+  }
+  return rows;
+}
+
+// --- Escapa XML ---
+function escXml(s){
+  return String(s)
+    .replace(/&/g,'&amp;')
+    .replace(/</g,'&lt;')
+    .replace(/>/g,'&gt;')
+    .replace(/"/g,'&quot;')
+    .replace(/'/g,'&apos;');
+}
+
+// Exporta em Excel (.xls via XML Spreadsheet) com fallback CSV UTF-8 (BOM)
+function exportTable(tableId, filename){
+  const table = document.getElementById(tableId);
+  if(!table){ alert("Tabela não encontrada"); return; }
+
+  // Clona a tabela para retirar estilos de corte (ellipsis/nowrap) na exportação
+  const clone = table.cloneNode(true);
+  clone.querySelectorAll("th,td").forEach(n=>{
+    n.style.whiteSpace = "normal";
+    n.style.textOverflow = "initial";
+  });
+
+  const data = tableToMatrix(clone);
+
+  // 1) XLS (XML Spreadsheet 2003)
+  const xlsRows = data.map(row =>
+    `<Row>` + row.map(cell => `<Cell><Data ss:Type="String">${escXml(cell)}</Data></Cell>`).join("") + `</Row>`
+  ).join("");
+  const xlsContent =
+`<?xml version="1.0"?>
+<?mso-application progid="Excel.Sheet"?>
+<Workbook xmlns="urn:schemas-microsoft-com:office:spreadsheet"
+          xmlns:o="urn:schemas-microsoft-com:office:office"
+          xmlns:x="urn:schemas-microsoft-com:office:excel"
+          xmlns:ss="urn:schemas-microsoft-com:office:spreadsheet">
+  <Worksheet ss:Name="${escXml(filename)}">
+    <Table>${xlsRows}</Table>
+  </Worksheet>
+</Workbook>`;
+
+  try {
+    downloadBlob(xlsContent, "application/vnd.ms-excel;charset=utf-8", `${filename}.xls`);
+    return;
+  } catch(e){
+    console.warn("Falhou XLS, tentando CSV...", e);
+  }
+
+  // 2) CSV UTF-8 com BOM + sep=;
+  const sep = ";";
+  const lines = data.map(row =>
+    row.map(v => `"${String(v).replace(/"/g,'""')}"`).join(sep)
+  ).join("\r\n");
+  const BOM = "\uFEFF";
+  const SEP = "sep=;\r\n";
+  downloadBlob(BOM + SEP + lines, "text/csv;charset=utf-8", `${filename}.csv`);
+}
+
+// PDF simples via janela de impressão (mantém estilos básicos)
 function exportPDF(tableId, filename){
   const table = document.getElementById(tableId);
   if(!table){ alert("Tabela não encontrada"); return; }
@@ -319,6 +417,7 @@ function exportPDF(tableId, filename){
       table{border-collapse:collapse; width:100%;}
       th,td{border:1px solid #ccc; padding:6px; font-size:12px; text-align:center;}
       th{background:#f0f0f0;}
+      td.right{text-align:right;}
     </style>
     </head><body>`);
   win.document.write(`<h2>${filename.replaceAll("_"," ").toUpperCase()}</h2>`);
@@ -359,7 +458,7 @@ async function clearMonth(){
 async function renderAsync(){
   const cat = await getCatalog();
 
-  // preserve seleção atual
+  // preserve seleção atual do formulário
   const selectedCat = el.categoria?.value || "";
   const selectedSub = el.subcategoria?.value || "";
 
@@ -457,7 +556,7 @@ function setupEvents(){
 
   el.formPrev?.addEventListener("submit", onAddPrevisao);
 
-  // Corrigido: atualizar apenas as subcategorias ao trocar a categoria
+  // Atualiza apenas as subcategorias ao trocar a categoria
   el.categoria?.addEventListener("change", async () => {
     const cat = await getCatalog();
     const categoryId = el.categoria.value;
@@ -489,9 +588,9 @@ function setupEvents(){
 })();
 
 /* expose */
-window.addPagamento = addPagamento;
-window.openEditModal = openEditModal;
+window.addPagamento   = addPagamento;
+window.openEditModal  = openEditModal;
 window.excluirLancamento = excluirLancamento;
-window.exportTable = exportTable;
-window.exportPDF = exportPDF;
-window.makeFileName = makeFileName;
+window.exportTable    = exportTable;
+window.exportPDF      = exportPDF;
+window.makeFileName   = makeFileName;
