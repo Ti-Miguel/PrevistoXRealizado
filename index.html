@@ -1,0 +1,278 @@
+<!DOCTYPE html>
+<html lang="pt-BR" data-sector="ODONTOLOGIA">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Previsto x Realizado</title>
+  <link rel="icon" href="./logo.jpeg" type="image/jpeg" />
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <!-- BLOQUEIO: exige login exclusivo do financeiro -->
+  <script>
+    if (!sessionStorage.getItem('pxr_logado')) {
+      window.location.href = 'login_pxr.html';
+    }
+  </script>
+
+  <header class="app-header">
+    <div class="wrap row between center">
+      <div class="brand row center">
+        <div class="brand-mark">PxR</div>
+        <div>
+          <h1>Previsto x Realizado</h1>
+          <p>Controle mensal de previsões e pagamentos</p>
+        </div>
+      </div>
+
+          <div class="header-tools">
+      <div class="sector-switch" role="tablist" aria-label="Trocar setor">
+        <button class="sector-btn" data-sector="ODONTOLOGIA" aria-pressed="true">Odontologia</button>
+        <button class="sector-btn" data-sector="MEDICINA" aria-pressed="false">Medicina</button>
+      </div>
+    
+      <div class="month-inline">
+        <label for="mesRef">Mês de referência</label>
+        <input type="month" id="mesRef" />
+        <button id="btnNovoMes" class="btn btn-outline-light" title="Limpar dados do mês selecionado">Limpar</button>
+      </div>
+    
+      <button class="btn" onclick="window.location.href='/hub.html'">↪ Hub de Sistemas</button>
+    </div>
+        </div>
+  </header>
+
+  <main class="wrap">
+    <!-- Resumo -->
+    <section class="summary">
+      <div class="kpi"><span>Total Previsto</span><strong id="sumPrevisto">R$ 0,00</strong></div>
+      <div class="kpi"><span>Total Pago</span>    <strong id="sumPago">R$ 0,00</strong></div>
+      <div class="kpi"><span>Diferença</span>     <strong id="sumDiferenca">R$ 0,00</strong></div>
+      <div class="kpi"><span>% Realizado</span>   <strong id="sumPercent">0%</strong></div>
+    </section>
+
+    <!-- Abas -->
+    <nav class="tabs">
+      <button class="tab-btn active" data-tab="tabMes">Despesas do Mês</button>
+      <button class="tab-btn" data-tab="tabDiario">Lançamentos Diários</button>
+      <button class="tab-btn" data-tab="tabRel">Relatório</button>
+      <button class="tab-btn" data-tab="tabCats">Categorias</button>
+      <button class="tab-btn" data-tab="tabHist">Histórico</button>
+    </nav>
+
+    <!-- DESPESAS DO MÊS -->
+    <section id="tabMes" class="tab active">
+      <form id="formPrev" class="card" autocomplete="off" novalidate>
+        <h2>Lançar previsão (início do mês)</h2>
+
+        <div class="grid-2">
+          <div>
+            <label for="categoria">Categoria</label>
+            <select id="categoria" required></select>
+          </div>
+          <div>
+            <label for="subcategoria">Subcategoria</label>
+            <select id="subcategoria" required></select>
+          </div>
+        </div>
+
+        <label for="vencimento">Vencimento</label>
+        <input id="vencimento" type="date" />
+
+        <label for="valorPrev">Valor Previsto (R$)</label>
+        <input id="valorPrev" type="number" step="0.01" min="0" />
+
+        <div class="row gap">
+          <button type="submit" class="btn btn-accent">Adicionar previsão</button>
+          <button type="reset" class="btn btn-outline-dark">Limpar</button>
+        </div>
+        <p class="hint">Categorias/Subcategorias são fixas (aba <b>Categorias</b>).</p>
+      </form>
+
+      <div class="card">
+        <h2>Previsões do mês</h2>
+        <div class="table-wrap">
+          <table class="table" id="tbPrevMes">
+            <thead>
+              <tr>
+                <th>Venc.</th>
+                <th>Categoria</th>
+                <th>Subcategoria</th>
+                <th class="right">Previsto</th>
+              </tr>
+            </thead>
+            <tbody><!-- via JS --></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <!-- LANÇAMENTOS DIÁRIOS -->
+    <section id="tabDiario" class="tab">
+      <div class="card">
+        <div class="row between center">
+          <h2>Lançamentos Diários</h2>
+          <select id="filtroStatus" class="select">
+            <option value="todos">Todos</option>
+            <option value="pendente">Pendentes</option>
+            <option value="pago">Pagos</option>
+          </select>
+        </div>
+
+        <div class="table-wrap">
+          <table class="table" id="tbLanc">
+            <thead>
+              <tr>
+                <th>Ações</th>
+                <th>Venc.</th>
+                <th>Categoria</th>
+                <th>Subcategoria</th>
+                <th class="right">Previsto</th>
+                <th class="right">Pago</th>
+                <th class="right">Saldo</th>
+                <th>Status</th>
+              </tr>
+            </thead>
+            <tbody><!-- via JS --></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <!-- RELATÓRIO -->
+    <section id="tabRel" class="tab">
+      <div class="card">
+        <div class="row between center">
+          <h2>Relatório por Categoria / Subcategoria</h2>
+          <button id="btnAtualizarRel" class="btn btn-outline-dark">Atualizar</button>
+        </div>
+        <div class="table-wrap">
+          <table class="table" id="tbRel">
+            <thead>
+              <tr>
+                <th>Categoria</th>
+                <th>Subcategoria</th>
+                <th class="right">Previsto</th>
+                <th class="right">Pago</th>
+                <th class="right">Diferença</th>
+                <th class="right">% Realizado</th>
+              </tr>
+            </thead>
+            <tbody><!-- via JS --></tbody>
+            <tfoot>
+              <tr class="tfoot">
+                <td colspan="2">Totais</td>
+                <td id="relTotPrev" class="right">R$ 0,00</td>
+                <td id="relTotPago" class="right">R$ 0,00</td>
+                <td id="relTotDif"  class="right">R$ 0,00</td>
+                <td id="relTotPerc" class="right">0%</td>
+              </tr>
+            </tfoot>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <!-- CATEGORIAS -->
+    <section id="tabCats" class="tab">
+      <div class="grid-2">
+        <div class="card">
+          <h2>Gerenciar Categorias</h2>
+          <div class="row gap">
+            <input id="novaCategoria" placeholder="Nova categoria" />
+            <button id="btnAddCat" class="btn">Adicionar</button>
+          </div>
+          <div class="table-wrap">
+            <table class="table" id="tbCats">
+              <thead><tr><th>Categoria</th><th>Subcats</th><th class="right">Ações</th></tr></thead>
+              <tbody><!-- via JS --></tbody>
+            </table>
+          </div>
+        </div>
+
+        <div class="card">
+          <h2>Gerenciar Subcategorias</h2>
+          <div class="row gap">
+            <select id="catParaSub"></select>
+            <input id="novaSubcat" placeholder="Nova subcategoria" />
+            <button id="btnAddSub" class="btn">Adicionar</button>
+          </div>
+          <div class="table-wrap">
+            <table class="table" id="tbSubs">
+              <thead><tr><th>Categoria</th><th>Subcategoria</th><th class="right">Ações</th></tr></thead>
+              <tbody><!-- via JS --></tbody>
+            </table>
+          </div>
+          <p class="hint">Não é possível excluir itens em uso.</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- HISTÓRICO -->
+    <section id="tabHist" class="tab">
+      <div class="card">
+        <h2>Histórico de Pagamentos (mês atual)</h2>
+        <div class="table-wrap">
+          <table class="table" id="tbHist">
+            <thead>
+              <tr>
+                <th>Data</th>
+                <th>Categoria</th>
+                <th>Subcategoria</th>
+                <th class="right">Valor Pago</th>
+                <th>Venc.</th>
+                <th class="right">Previsto</th>
+              </tr>
+            </thead>
+            <tbody><!-- via JS --></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <!-- Modal editar -->
+  <div id="modalBack" class="backdrop" hidden>
+    <div class="modal">
+      <h3>Editar lançamento</h3>
+
+      <div class="grid-2">
+        <div>
+          <label for="editCat">Categoria</label>
+          <select id="editCat"></select>
+        </div>
+        <div>
+          <label for="editSub">Subcategoria</label>
+          <select id="editSub"></select>
+        </div>
+      </div>
+
+      <label for="editVenc">Vencimento</label>
+      <input id="editVenc" type="date" />
+
+      <label for="editPrev">Valor Previsto (R$)</label>
+      <input id="editPrev" type="number" step="0.01" min="0" />
+
+      <div class="row gap end">
+        <button id="btnCancelarEdit" class="btn btn-outline-dark">Cancelar</button>
+        <button id="btnSalvarEdit" class="btn">Salvar</button>
+      </div>
+    </div>
+  </div>
+
+  <footer class="wrap foot">
+    <small>Dados de categorias são <b>globais</b>; lançamentos são por <b>setor + mês</b> (localStorage).</small>
+  </footer>
+
+  <!-- Failsafe: garante modal fechado ao carregar -->
+  <script>
+    document.addEventListener('DOMContentLoaded', () => {
+      const back = document.getElementById('modalBack');
+      if (back && back.hidden !== true) back.hidden = true;
+    });
+  </script>
+
+  <!-- JS principal -->
+  <script src="script.js?v=4"></script>
+</body>
+</html>
